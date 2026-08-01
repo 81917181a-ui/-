@@ -4,14 +4,10 @@ import discord
 from discord import ui
 from discord.ext import commands
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 import uvicorn
 
-app = FastAPI()
-
-@app.get("/")
-def health_check():
-    return {"status": "Running", "service": "Train Schedule Bot"}
-
+# --- Discord Bot の設定 ---
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -27,7 +23,6 @@ async def on_ready():
 
 # --- 入力用モーダル ---
 class EventModal(ui.Modal, title="ダイヤ運行イベント作成"):
-    # ※モーダルでは画像ファイルを受け取れないため、テキスト項目のみを定義します
     railway = ui.TextInput(label="運行先鉄道", placeholder="例: JR東日本", max_length=100)
     event_link = ui.TextInput(label="イベントリンク", placeholder="https://discord.gg/...", max_length=200, required=False)
     section = ui.TextInput(label="走行区間", placeholder="例: 東京 ～ 熱海", max_length=100)
@@ -37,10 +32,9 @@ class EventModal(ui.Modal, title="ダイヤ運行イベント作成"):
 
     def __init__(self, image_attachment: discord.Attachment = None):
         super().__init__()
-        self.image_attachment = image_attachment # 添付された画像を受け取る
+        self.image_attachment = image_attachment
 
     async def on_submit(self, interaction: discord.Interaction):
-        # 指定されたフォーマットでEmbedを構築
         embed = discord.Embed(
             title="## ダイヤ運行予定",
             color=discord.Color.blue()
@@ -61,29 +55,35 @@ class EventModal(ui.Modal, title="ダイヤ運行イベント作成"):
         if self.remarks.value:
             embed.add_field(name="備 考", value=self.remarks.value, inline=False)
 
-        # 写真が添付されている場合はEmbedの上部に画像をセット
         if self.image_attachment:
             embed.set_image(url=self.image_attachment.url)
 
-        # チャンネルに送信（画像を添付していた場合はファイル自体も渡すか、URL参照にする）
         await interaction.response.send_message(embed=embed)
 
 # --- スラッシュコマンド ---
 @bot.tree.command(name="manage", description="ダイヤ運行の管理を行います")
 @discord.app_commands.describe(image="運行のサムネイルや路線図などの画像（任意）")
 async def manage_event(interaction: discord.Interaction, image: discord.Attachment = None):
-    # モーダルを呼び出す際に、一緒に指定された画像オブジェクトを渡す
     modal = EventModal(image_attachment=image)
     await interaction.response.send_modal(modal)
 
-async def run_bot():
+# --- FastAPI のライフスパン設定 (非推奨警告の解消) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 起動時の処理
     token = os.getenv("BOT_TOKEN")
     if token:
-        await bot.start(token)
+        asyncio.create_task(bot.start(token))
+    else:
+        print("Error: BOT_TOKEN is not set.")
+    yield
+    # 終了時の処理（必要に応じて）
 
-@app.on_event("startup")
-def startup_event():
-    asyncio.create_task(run_bot())
+app = FastAPI(lifespan=lifespan)
+
+@app.get("/")
+def health_check():
+    return {"status": "Running", "service": "Train Schedule Bot"}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
