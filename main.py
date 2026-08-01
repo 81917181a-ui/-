@@ -15,11 +15,15 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} commands.")
-    except Exception as e:
-        print(e)
+    # 同期処理をバックグラウンドに逃がすことで、ログイン直後のブロックを防ぎます
+    async def background_sync():
+        try:
+            synced = await bot.tree.sync()
+            print(f"Synced {len(synced)} commands.")
+        except Exception as e:
+            print(f"Failed to sync commands: {e}")
+    
+    asyncio.create_task(background_sync())
 
 # --- 入力用モーダル ---
 class EventModal(ui.Modal, title="ダイヤ運行イベント作成"):
@@ -67,17 +71,15 @@ async def manage_event(interaction: discord.Interaction, image: discord.Attachme
     modal = EventModal(image_attachment=image)
     await interaction.response.send_modal(modal)
 
-# --- FastAPI のライフスパン設定 (非推奨警告の解消) ---
+# --- FastAPI のライフスパン設定 ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 起動時の処理
     token = os.getenv("BOT_TOKEN")
     if token:
         asyncio.create_task(bot.start(token))
     else:
         print("Error: BOT_TOKEN is not set.")
     yield
-    # 終了時の処理（必要に応じて）
 
 app = FastAPI(lifespan=lifespan)
 
