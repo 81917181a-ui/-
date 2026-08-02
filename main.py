@@ -1,7 +1,6 @@
 import os
 import asyncio
 import discord
-from discord import ui
 from discord.ext import commands
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
@@ -25,9 +24,9 @@ async def on_ready():
 
 # --- 運行設定を保持するセッションクラス ---
 class TrainSession:
-    def __init__(self, title: str, user_name: str, event_link: str = "なし", image_url: str = None):
+    def __init__(self, title: str, user_mention: str, event_link: str = "なし", image_url: str = None):
         self.title = title
-        self.user_name = user_name
+        self.user_mention = user_mention
         self.event_link = event_link
         self.image_url = image_url
         self.railway = "未設定"
@@ -51,84 +50,16 @@ class TrainSession:
             f"・備 考: {self.remarks}\n"
             f"───────────────────"
         )
-        embed.add_field(name="主催者", value=self.user_name, inline=False)
+        embed.add_field(name="主催者", value=self.user_mention, inline=False)
         if self.image_url:
             embed.set_image(url=self.image_url)
         return embed
-
-# --- 操作用UIパネル（スレッド内用） ---
-class TrainControlView(ui.View):
-    def __init__(self, session: TrainSession, target_channel: discord.TextChannel):
-        super().__init__(timeout=None)
-        self.session = session
-        self.target_channel = target_channel
-
-    @ui.button(label="⚙️ 設定を変更する", style=discord.ButtonStyle.primary, row=0)
-    async def edit_settings(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(TrainEditModal(self.session, self.target_channel))
-
-    @ui.button(label="🚀 ダイヤ運行を確定・投稿", style=discord.ButtonStyle.success, row=0)
-    async def publish_event(self, interaction: discord.Interaction, button: ui.Button):
-        embed = discord.Embed(title="ダイヤ運行予定", color=discord.Color.green())
-        embed.add_field(name="主催者", value=self.session.user_name, inline=False)
-        embed.add_field(name="運行先鉄道", value=self.session.railway, inline=False)
-        embed.add_field(name="イベントリンク", value=self.session.event_link, inline=False)
-        embed.add_field(name="走行区間", value=self.session.section, inline=False)
-        embed.add_field(name="開始時刻", value=self.session.start_time, inline=True)
-        embed.add_field(name="終了時刻", value=self.session.end_time, inline=True)
-        if self.session.remarks != "未設定":
-            embed.add_field(name="備 考", value=self.session.remarks, inline=False)
-        if self.session.image_url:
-            embed.set_image(url=self.session.image_url)
-
-        # ターゲットチャンネルに最終結果を送信
-        await self.target_channel.send(embed=embed)
-        await interaction.response.edit_message(content="✅ ダイヤ運行イベントが正式に確定・投稿されました！このスレッドはまもなく閉じられます。", embed=None, view=None)
-        
-        # スレッドをアーカイブ（終了）する
-        try:
-            if isinstance(interaction.channel, discord.Thread):
-                await asyncio.sleep(3)
-                await interaction.channel.edit(archived=True, locked=True)
-        except Exception:
-            pass
-
-# --- 設定変更モーダル ---
-class TrainEditModal(ui.Modal, title="ダイヤ運行の各設定入力"):
-    railway = ui.TextInput(label="運行先鉄道", placeholder="例: 尾羽旧電鉄", max_length=100)
-    event_link = ui.TextInput(label="イベントリンク", placeholder="https://discord.gg/... または なし", max_length=200, required=False)
-    section = ui.TextInput(label="走行区間", placeholder="例: 尾羽急本線", max_length=100)
-    start_time = ui.TextInput(label="開始時間", placeholder="例: 23:00", max_length=50)
-    end_time = ui.TextInput(label="終了時間", placeholder="例: 0:00", max_length=50)
-    remarks = ui.TextInput(label="備 考", style=discord.TextStyle.paragraph, placeholder="例: 終電運行", required=False)
-
-    def __init__(self, session: TrainSession, target_channel: discord.TextChannel):
-        super().__init__()
-        self.session = session
-        self.target_channel = target_channel
-        self.railway.default = self.session.railway if self.session.railway != "未設定" else ""
-        self.event_link.default = self.session.event_link if self.session.event_link != "なし" else ""
-        self.section.default = self.session.section if self.session.section != "未設定" else ""
-        self.start_time.default = self.session.start_time
-        self.end_time.default = self.session.end_time
-        self.remarks.default = self.session.remarks if self.session.remarks != "未設定" else ""
-
-    async def on_submit(self, interaction: discord.Interaction):
-        self.session.railway = self.railway.value
-        self.session.event_link = self.event_link.value if self.event_link.value else "なし"
-        self.session.section = self.section.value
-        self.session.start_time = self.start_time.value
-        self.session.end_time = self.end_time.value
-        if self.remarks.value:
-            self.session.remarks = self.remarks.value
-
-        await interaction.response.edit_message(embed=self.session.make_embed(), view=TrainControlView(self.session, self.target_channel))
 
 # --- コマンド群 ---
 
 @bot.group(name="manage", invoke_without_command=True)
 async def manage(ctx):
-    await ctx.send("使用方法: `!manage event #チャンネル名 (またはID) [イベントリンク(任意)]`")
+    await ctx.send("使用方法: `!manage event #チャンネル名 [イベントリンク(任意)]`")
 
 @manage.command(name="event")
 async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str = "なし"):
@@ -136,45 +67,121 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
         await ctx.send("❌ チャンネルを指定してください（例: `!manage event #general https://discord.gg/...`）")
         return
 
-    # 実行時に添付された画像があれば取得
+    # コマンドのメッセージを削除してログを綺麗にする
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
     image_url = ctx.message.attachments[0].url if ctx.message.attachments else None
-    session = TrainSession(title="ダイヤ作成", user_name=ctx.author.mention, event_link=event_link, image_url=image_url)
+    session = TrainSession(title="ダイヤ作成", user_mention=ctx.author.mention, event_link=event_link, image_url=image_url)
     
-    # 1. 宛先チャンネルにベースとなるメッセージを送信
-    base_msg = await channel.send(f"🚉 **{ctx.author.display_name}** さんがダイヤ運行の作成を開始しました（スレッドをご確認ください👇）")
+    # 1. 宛先チャンネルにパネルの最初のメッセージを送信
+    panel_msg = await channel.send(embed=session.make_embed())
     
     # 2. そのメッセージを親としてパブリックスレッドを作成
     thread = await channel.create_thread(
         name=f"ダイヤ作成-{ctx.author.display_name}",
-        message=base_msg,
+        message=panel_msg,
         type=discord.ChannelType.public_thread
     )
 
-    # 3. スレッドの中に操作パネルを送信
-    view = TrainControlView(session, channel)
-    await thread.send(embed=session.make_embed(), view=view)
-    
-    # 実行元のチャットに案内を返す
-    await ctx.send(f"✅ {thread.mention} を作成しました！スレッドに移動して設定を行ってください。", delete_after=10)
+    # 3. 順番に質問していくウィザード形式の処理
+    questions = [
+        ("運行先鉄道", "運行先の鉄道名を入力してください（例: 尾羽旧電鉄）"),
+        ("走行区間", "走行区間を入力してください（例: 尾羽急本線）"),
+        ("開始時間", "開始時間を入力してください（例: 23:00）"),
+        ("終了時間", "終了時間を入力してください（例: 0:00）"),
+        ("備 考", "備考を入力してください（例: 終電運行 / なしなら 「なし」等）")
+    ]
+
+    def check(m):
+        return m.author == ctx.author and m.channel == thread
+
+    try:
+        for attr, q_text in questions:
+            # 質問を送信
+            q_msg = await thread.send(f"{ctx.author.mention} {q_text}")
+            
+            # 30分以内に返信がない場合はキャンセル
+            msg = await bot.wait_for('message', timeout=1800.0, check=check)
+            
+            # ユーザーの返信と質問を削除してスレッド内をすっきりさせる
+            try:
+                await msg.delete()
+                await q_msg.delete()
+            except Exception:
+                pass
+
+            # データを更新
+            if attr == "運行先鉄道":
+                session.railway = msg.content
+            elif attr == "走行区間":
+                session.section = msg.content
+            elif attr == "開始時間":
+                session.start_time = msg.content
+            elif attr == "終了時間":
+                session.end_time = msg.content
+            elif attr == "備 考":
+                session.remarks = msg.content
+
+            # パネル（Embed）を更新
+            await panel_msg.edit(embed=session.make_embed())
+
+        # すべて入力完了したら確定版を同じチャンネルに送信してスレッドを閉じる
+        final_embed = discord.Embed(title="ダイヤ運行予定", color=discord.Color.green())
+        final_embed.add_field(name="主催者", value=session.user_mention, inline=False)
+        final_embed.add_field(name="運行先鉄道", value=session.railway, inline=False)
+        final_embed.add_field(name="イベントリンク", value=session.event_link, inline=False)
+        final_embed.add_field(name="走行区間", value=session.section, inline=False)
+        final_embed.add_field(name="開始時刻", value=session.start_time, inline=True)
+        final_embed.add_field(name="終了時刻", value=session.end_time, inline=True)
+        if session.remarks != "未設定" and session.remarks != "なし":
+            final_embed.add_field(name="備 考", value=session.remarks, inline=False)
+        if session.image_url:
+            final_embed.set_image(url=session.image_url)
+
+        await channel.send(embed=final_embed)
+        await thread.send("✅ すべての設定が完了し、ダイヤ運行予定を正式に投稿しました！このスレッドを閉じます。")
+        await asyncio.sleep(3)
+        await thread.edit(archived=True, locked=True)
+
+    except asyncio.TimeoutError:
+        await thread.send("⏰ 30分間応答がなかったため、ダイヤ作成をキャンセルしました。")
+        await asyncio.sleep(3)
+        try:
+            await panel_msg.delete()
+            await thread.edit(archived=True, locked=True)
+        except Exception:
+            pass
 
 @bot.command(name="sendmessage")
 async def send_message_cmd(ctx, channel: discord.TextChannel = None, *, message: str = None):
     if not channel or not message:
-        await ctx.send("❌ 使い方: `!sendmessage #チャンネル名 (またはID) 送信したいメッセージ内容` （画像を添付して実行可能）")
+        await ctx.send("❌ 使い方: `!sendmessage #チャンネル名 (またはID) 送信したいメッセージ内容`")
         return
     
     try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    try:
         files = [await att.to_file() for att in ctx.message.attachments] if ctx.message.attachments else []
         await channel.send(message, files=files)
-        await ctx.send(f"✅ {channel.mention} にメッセージを送信しました！")
     except Exception as e:
         await ctx.send(f"❌ 送信に失敗しました: {e}")
 
 @bot.command(name="serverchannelID")
 async def server_channel_id(ctx):
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
     guild = ctx.guild
     if not guild:
-        await ctx.send("❌ このコマンドはサーバー内で実行してください。")
+        await ctx.send("❌ このサーバー内で実行してください。")
         return
 
     text_channels = guild.text_channels
