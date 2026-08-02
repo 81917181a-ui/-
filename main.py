@@ -40,6 +40,10 @@ class TrainSession:
             title=f"🚉 {self.title} のダイヤを作成中",
             color=discord.Color.blue()
         )
+        # 画像がある場合は最初にセットして上に表示させる
+        if self.image_url:
+            embed.set_image(url=self.image_url)
+
         embed.description = (
             f"現在の設定:\n"
             f"・運行先鉄道: {self.railway}\n"
@@ -51,8 +55,6 @@ class TrainSession:
             f"───────────────────"
         )
         embed.add_field(name="主催者", value=self.user_mention, inline=False)
-        if self.image_url:
-            embed.set_image(url=self.image_url)
         return embed
 
 # --- コマンド群 ---
@@ -72,8 +74,7 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
     except Exception:
         pass
 
-    image_url = ctx.message.attachments[0].url if ctx.message.attachments else None
-    session = TrainSession(title="ダイヤ作成", user_mention=ctx.author.mention, event_link=event_link, image_url=image_url)
+    session = TrainSession(title="ダイヤ作成", user_mention=ctx.author.mention, event_link=event_link)
     
     panel_msg = await channel.send(embed=session.make_embed())
     
@@ -88,7 +89,8 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
         ("走行区間", "走行区間を入力してください（例: 尾羽急本線）"),
         ("開始時間", "開始時間を入力してください（例: 23:00）"),
         ("終了時間", "終了時間を入力してください（例: 0:00）"),
-        ("備 考", "備考を入力してください（例: 終電運行 / なしなら 「なし」等）")
+        ("備 考", "備考を入力してください（例: 終電運行 / なしなら 「なし」等）"),
+        ("画像", "最後に、Embedの1番上に載せる画像を送信してください（画像がない場合は「なし」と送信してください）")
     ]
 
     def check(m):
@@ -115,10 +117,16 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
                 session.end_time = msg.content
             elif attr == "備 考":
                 session.remarks = msg.content
+            elif attr == "画像":
+                if msg.attachments:
+                    session.image_url = msg.attachments[0].url
 
             await panel_msg.edit(embed=session.make_embed())
 
         final_embed = discord.Embed(title="ダイヤ運行予定", color=discord.Color.green())
+        if session.image_url:
+            final_embed.set_image(url=session.image_url)
+
         final_embed.add_field(name="主催者", value=session.user_mention, inline=False)
         final_embed.add_field(name="運行先鉄道", value=session.railway, inline=False)
         final_embed.add_field(name="イベントリンク", value=session.event_link, inline=False)
@@ -127,8 +135,6 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
         final_embed.add_field(name="終了時刻", value=session.end_time, inline=True)
         if session.remarks != "未設定" and session.remarks != "なし":
             final_embed.add_field(name="備 考", value=session.remarks, inline=False)
-        if session.image_url:
-            final_embed.set_image(url=session.image_url)
 
         await panel_msg.edit(content=f"✅ ダイヤ運行予定が正式に投稿されました！ (メッセージID: `{panel_msg.id}`)", embed=final_embed)
         await thread.send("✅ すべての設定が完了しました！このスレッドを閉じます。")
@@ -144,7 +150,6 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
         except Exception:
             pass
 
-# --- イベントキャンセル機能 ---
 @bot.group(name="event", invoke_without_command=True)
 async def event_group(ctx):
     await ctx.send("使用方法: `!event cancel [キャンセル理由] [messageID]`")
@@ -160,15 +165,12 @@ async def event_cancel(ctx, reason: str = None, message_id: int = None):
     except Exception:
         pass
 
-    # 実行されたチャンネル、またはサーバー内から該当のメッセージを探す
     target_message = None
     for channel in ctx.guild.text_channels:
         try:
             target_message = await channel.fetch_message(message_id)
             break
-        except discord.NotFound:
-            continue
-        except discord.Forbidden:
+        except (discord.NotFound, discord.Forbidden):
             continue
 
     if not target_message:
@@ -232,7 +234,6 @@ async def server_channel_id(ctx):
 
     await ctx.send(msg)
 
-# --- FastAPI のライフスパン設定 ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     token = os.getenv("BOT_TOKEN")
