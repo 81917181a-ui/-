@@ -25,12 +25,12 @@ async def on_ready():
 
 # --- 運行設定を保持するセッションクラス ---
 class TrainSession:
-    def __init__(self, title: str, user_name: str, image_url: str = None):
+    def __init__(self, title: str, user_name: str, event_link: str = "なし", image_url: str = None):
         self.title = title
         self.user_name = user_name
+        self.event_link = event_link
         self.image_url = image_url
         self.railway = "未設定"
-        self.event_link = "なし"
         self.section = "未設定"
         self.start_time = "23:00"
         self.end_time = "0:00"
@@ -56,7 +56,7 @@ class TrainSession:
             embed.set_image(url=self.image_url)
         return embed
 
-# --- 操作用UIパネル ---
+# --- 操作用UIパネル（スレッド内用） ---
 class TrainControlView(ui.View):
     def __init__(self, session: TrainSession, target_channel: discord.TextChannel):
         super().__init__(timeout=None)
@@ -81,10 +81,19 @@ class TrainControlView(ui.View):
         if self.session.image_url:
             embed.set_image(url=self.session.image_url)
 
+        # ターゲットチャンネルに最終結果を送信
         await self.target_channel.send(embed=embed)
-        await interaction.response.edit_message(content=f"✅ {self.target_channel.mention} にダイヤ運行イベントを投稿しました！", embed=None, view=None)
+        await interaction.response.edit_message(content="✅ ダイヤ運行イベントが正式に確定・投稿されました！このスレッドはまもなく閉じられます。", embed=None, view=None)
+        
+        # スレッドをアーカイブ（終了）する
+        try:
+            if isinstance(interaction.channel, discord.Thread):
+                await asyncio.sleep(3)
+                await interaction.channel.edit(archived=True, locked=True)
+        except Exception:
+            pass
 
-# --- 設定変更モーダル（イベントリンク付き） ---
+# --- 設定変更モーダル ---
 class TrainEditModal(ui.Modal, title="ダイヤ運行の各設定入力"):
     railway = ui.TextInput(label="運行先鉄道", placeholder="例: 尾羽旧電鉄", max_length=100)
     event_link = ui.TextInput(label="イベントリンク", placeholder="https://discord.gg/... または なし", max_length=200, required=False)
@@ -119,20 +128,34 @@ class TrainEditModal(ui.Modal, title="ダイヤ運行の各設定入力"):
 
 @bot.group(name="manage", invoke_without_command=True)
 async def manage(ctx):
-    await ctx.send("使用方法: `!manage event #チャンネル名 (またはID)` （画像を添付して実行可能）")
+    await ctx.send("使用方法: `!manage event #チャンネル名 (またはID) [イベントリンク(任意)]`")
 
 @manage.command(name="event")
-async def manage_event(ctx, channel: discord.TextChannel = None):
+async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str = "なし"):
     if not channel:
-        await ctx.send("❌ チャンネルを指定してください（例: `!manage event #general` または ID）")
+        await ctx.send("❌ チャンネルを指定してください（例: `!manage event #general https://discord.gg/...`）")
         return
 
     # 実行時に添付された画像があれば取得
     image_url = ctx.message.attachments[0].url if ctx.message.attachments else None
-    session = TrainSession(title="ダイヤ作成", user_name=ctx.author.mention, image_url=image_url)
+    session = TrainSession(title="ダイヤ作成", user_name=ctx.author.mention, event_link=event_link, image_url=image_url)
     
+    # 1. 宛先チャンネルにベースとなるメッセージを送信
+    base_msg = await channel.send(f"🚉 **{ctx.author.display_name}** さんがダイヤ運行の作成を開始しました（スレッドをご確認ください👇）")
+    
+    # 2. そのメッセージを親としてパブリックスレッドを作成
+    thread = await channel.create_thread(
+        name=f"ダイヤ作成-{ctx.author.display_name}",
+        message=base_msg,
+        type=discord.ChannelType.public_thread
+    )
+
+    # 3. スレッドの中に操作パネルを送信
     view = TrainControlView(session, channel)
-    await ctx.send(f"📍 {channel.mention} 向けの運行作成パネルを起動します👇", embed=session.make_embed(), view=view)
+    await thread.send(embed=session.make_embed(), view=view)
+    
+    # 実行元のチャットに案内を返す
+    await ctx.send(f"✅ {thread.mention} を作成しました！スレッドに移動して設定を行ってください。", delete_after=10)
 
 @bot.command(name="sendmessage")
 async def send_message_cmd(ctx, channel: discord.TextChannel = None, *, message: str = None):
@@ -141,11 +164,9 @@ async def send_message_cmd(ctx, channel: discord.TextChannel = None, *, message:
         return
     
     try:
-        # メッセージ送信時に画像が添付されていれば、一緒にファイルを送信する
         files = [await att.to_file() for att in ctx.message.attachments] if ctx.message.attachments else []
-        
         await channel.send(message, files=files)
-        await ctx.send(f"✅ {channel.mention} にメッセージ（画像付き）を送信しました！")
+        await ctx.send(f"✅ {channel.mention} にメッセージを送信しました！")
     except Exception as e:
         await ctx.send(f"❌ 送信に失敗しました: {e}")
 
