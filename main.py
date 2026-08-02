@@ -67,7 +67,6 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
         await ctx.send("❌ チャンネルを指定してください（例: `!manage event #general https://discord.gg/...`）")
         return
 
-    # コマンドのメッセージを削除してログを綺麗にする
     try:
         await ctx.message.delete()
     except Exception:
@@ -76,17 +75,14 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
     image_url = ctx.message.attachments[0].url if ctx.message.attachments else None
     session = TrainSession(title="ダイヤ作成", user_mention=ctx.author.mention, event_link=event_link, image_url=image_url)
     
-    # 1. 宛先チャンネルにパネルの最初のメッセージを送信
     panel_msg = await channel.send(embed=session.make_embed())
     
-    # 2. そのメッセージを親としてパブリックスレッドを作成
     thread = await channel.create_thread(
         name=f"ダイヤ作成-{ctx.author.display_name}",
         message=panel_msg,
         type=discord.ChannelType.public_thread
     )
 
-    # 3. 順番に質問していくウィザード形式の処理
     questions = [
         ("運行先鉄道", "運行先の鉄道名を入力してください（例: 尾羽旧電鉄）"),
         ("走行区間", "走行区間を入力してください（例: 尾羽急本線）"),
@@ -100,20 +96,15 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
 
     try:
         for attr, q_text in questions:
-            # 質問を送信
             q_msg = await thread.send(f"{ctx.author.mention} {q_text}")
-            
-            # 30分以内に返信がない場合はキャンセル
             msg = await bot.wait_for('message', timeout=1800.0, check=check)
             
-            # ユーザーの返信と質問を削除してスレッド内をすっきりさせる
             try:
                 await msg.delete()
                 await q_msg.delete()
             except Exception:
                 pass
 
-            # データを更新
             if attr == "運行先鉄道":
                 session.railway = msg.content
             elif attr == "走行区間":
@@ -125,10 +116,8 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
             elif attr == "備 考":
                 session.remarks = msg.content
 
-            # パネル（Embed）を更新
             await panel_msg.edit(embed=session.make_embed())
 
-        # すべて入力完了したら確定版を同じチャンネルに送信してスレッドを閉じる
         final_embed = discord.Embed(title="ダイヤ運行予定", color=discord.Color.green())
         final_embed.add_field(name="主催者", value=session.user_mention, inline=False)
         final_embed.add_field(name="運行先鉄道", value=session.railway, inline=False)
@@ -141,8 +130,8 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
         if session.image_url:
             final_embed.set_image(url=session.image_url)
 
-        await channel.send(embed=final_embed)
-        await thread.send("✅ すべての設定が完了し、ダイヤ運行予定を正式に投稿しました！このスレッドを閉じます。")
+        await panel_msg.edit(content=f"✅ ダイヤ運行予定が正式に投稿されました！ (メッセージID: `{panel_msg.id}`)", embed=final_embed)
+        await thread.send("✅ すべての設定が完了しました！このスレッドを閉じます。")
         await asyncio.sleep(3)
         await thread.edit(archived=True, locked=True)
 
@@ -154,6 +143,50 @@ async def manage_event(ctx, channel: discord.TextChannel = None, event_link: str
             await thread.edit(archived=True, locked=True)
         except Exception:
             pass
+
+# --- イベントキャンセル機能 ---
+@bot.group(name="event", invoke_without_command=True)
+async def event_group(ctx):
+    await ctx.send("使用方法: `!event cancel [キャンセル理由] [messageID]`")
+
+@event_group.command(name="cancel")
+async def event_cancel(ctx, reason: str = None, message_id: int = None):
+    if not reason or not message_id:
+        await ctx.send("❌ 使い方: `!event cancel [キャンセル理由] [messageID]`")
+        return
+
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    # 実行されたチャンネル、またはサーバー内から該当のメッセージを探す
+    target_message = None
+    for channel in ctx.guild.text_channels:
+        try:
+            target_message = await channel.fetch_message(message_id)
+            break
+        except discord.NotFound:
+            continue
+        except discord.Forbidden:
+            continue
+
+    if not target_message:
+        await ctx.send("❌ 指定されたIDのメッセージが見つかりませんでした。", delete_after=10)
+        return
+
+    try:
+        if target_message.embeds:
+            embed = target_message.embeds[0]
+            embed.color = discord.Color.red()
+            embed.title = "🚫 【ダイヤ運行中止】"
+            embed.add_field(name="キャンセル理由", value=reason, inline=False)
+            await target_message.edit(content="⚠️ **このダイヤ運行は中止されました。**", embed=embed)
+            await ctx.send(f"✅ メッセージID `{message_id}` のイベントをキャンセル（中止）に変更しました。", delete_after=10)
+        else:
+            await ctx.send("❌ 指定されたメッセージにはEmbedが含まれていません。", delete_after=10)
+    except Exception as e:
+        await ctx.send(f"❌ キャンセル処理に失敗しました: {e}", delete_after=10)
 
 @bot.command(name="sendmessage")
 async def send_message_cmd(ctx, channel: discord.TextChannel = None, *, message: str = None):
